@@ -14,12 +14,12 @@ ofstream dump("combinaties.txt", ios::out);
 bool ONMOGELIJK = false;       //wordt true indien geen oplossing gevonden kan worden.
 bool TOONDETAILS = false;      //zet op true om meer details te zien over elke combinatie die berekend is (cout).
 bool TOONINPUT = true;         //zet op true om meer details te zien over input die gegeven werd en de combinaties die berekend gaan worden (cout).
-bool TOONBEREKENING = true;   //zet op true om meer details te zien over de minima berekening (cout).
+bool TOONBEREKENING = true;    //zet op true om meer details te zien over de minima berekening (cout).
 bool TOONELIMINATIE = true;    //zet op true om meer details te zien over reduceren van de resulterende spreidingen (cout).
 
 size_t maxAantalUurlijsten = 64; //technische beperking omdat ik ergens een uint64_t gebruik om de uurlijstcombinaties voor te stellen.
 size_t maxCombinaties = 10000;   //Beperken van het aantal combinaties van uurlijsten die we gaan berekenen
-size_t maxOutputFactor = 100;    //Beperken van het aantal max spreidingen die we willen overhouden (factor x aantal input uurlijsten)
+size_t maxOutputFactor = 50;     //Beperken van het aantal max spreidingen die we willen overhouden (factor x aantal input uurlijsten). Essentiele combi's worden niet meegeteld (com1 en comb2).
 
 //Inputdata. Is wat binnenkomt.
 //Er kan redundantie in de input zitten. Wordt eerst weggehaald. 
@@ -92,12 +92,13 @@ Voor hoeveel combinaties moeten we het proberen?
 - In theorie kan het voor elke combinatie. heb je m uurlijsten dan kan je 2^m - 1 combinaties bekijken.
 - omdat dit hoog kan oplopen wordt het aantal combinaties beperkt door de parameter maxCombinaties.
 Als de combinaties beperkt moeten worden is de vraag hoe we ze gaan selecteren. De keuze die hier gemaakt is, is als volgt:
-- via "voegCombinatiesVanKleinNaarGrootToe()"
-- combinaties 1 uit m (zijn er m)
-- combinaties 2 uit m
-- combinaties 3 uit m
+- via "voegCombinatiesSymmetrischToe()"
+- combinaties 1 uit m (zijn er m), combinaties (m-1) uit m (zijn er m)
+- combinaties 2 uit m (zijn er m.(m-1)/2), (m-2) uit m (zijn er m.(m-1)/2),
+- combinaties 3 uit m, ...
 - ...
-- we gaan dus van klein naar groot met een maximum van maxCombinaties
+- we gaan dus van klein naar groot en tegelijk van groot naar klein met een maximum van maxCombinaties.
+- Essentiele combinaties zullen steeds overblijven, zijn de combinaties van 1 uit m en 2 uit m.
 
 Voor elke combinatie die we berekenen gaan we vervolgens de unie van de uurlijsten bepalen, daar het inverse van nemen, en daar een max spreiding opzetten die bepaald wordt door MAX - "gevonden minimum combinatie".
 Na deze berekening volgt nog een reductie van het aantal combinaties. Een uurlijst/max kan bijvoorbeeld geïmpliceerd worden door een andere uurlijst/max. Dan heeft het geen zin om de eerste te behouden.
@@ -108,6 +109,7 @@ Na deze reductiestap kan het zijn dat er nog overdreven veel spreidingen overbli
 - in de volgorde dat ze toegevoegd werden worden de combinaties ook behouden tot het max aantal bereikt is.
 - de spreidingen die zeker moeten opgenomen worden zijn de essentiele en dan zijn de combinaties uit de groep (1 uit m).
 - "elimineerRedundanteCombinaties()" doet deze opkuis.
+- essentiele combinaties worden niet meegeteld voor het maximum en zitten er altijd in.
 
 Merk op dat min/max spreidingen op volgende manier elkaar kunnen impliceren, de strengste eis blijft overeind (A en B zijn uurlijsten):
 - Voor een min spreiding:
@@ -517,6 +519,7 @@ struct Combinatie {
 
     vector<bool> combo;            //verwijzing naar de gecombineerde uurlijsten. Relatief tov input. Bij clusters tov combinatie.
     vector<bool> inverseUurlijst;  //inverse unie van de door combo gecombineerde uurlijsten
+    int sortComboGrootte;          //aantal uurlijsten in de combinaties. (voor sortering tijdens berekening)
     int aantalUur;                 //aantal uren op true in inverseUurlijst (om verder te gebruiken vanwege performantie)
     int minimum;                   //het gevonden minimum voor deze combinatie (-1 indien geen oplossing gevonden en alles moet verworpen worden)
     int maximum;                   //is het totaal - minimum. Wordt het maximum voor de spreiding.
@@ -526,17 +529,27 @@ struct Combinatie {
     bool behouden;                 //combinatie weerhouden? Combinaties kunnen geïmpliceerd worden daar andere. Kunnen dus wegvallen zonder gevaar.
     uint64_t comboId;              //comboId maken om sneller bitwise operaties te kunnen doen.
  
-    Combinatie() : minimum(-1), maximum(-1), capaciteit(-1), essentieel(false), behouden(true), berekenbaar(true), comboId(0), aantalUur(0) {}
+    Combinatie() : minimum(-1), maximum(-1), capaciteit(-1), essentieel(false), behouden(true), berekenbaar(true), comboId(0), aantalUur(0), sortComboGrootte(0) {}
     Combinatie(vector<bool>& newCombo) : combo(newCombo), minimum(-1), maximum(-1), capaciteit(-1), essentieel(false), behouden(true), berekenbaar(true), aantalUur(0) {
         bepaalinverseUurlijst();
         //indien in de combo slechts één uurlijst staat dan is hij essentieel. Is ter bescherming omdat we niet weten welke combo's overleven door de maxOutputFactor.
-        essentieel = (aantalTrue(combo) == 1);
+        //Ook combinaties van 2 voegen we altijd toe omdat die ook steeds berekenbaar zijn.
+        sortComboGrootte = aantalTrue(combo);
+        essentieel = (sortComboGrootte <= 2);
         //comboId maken om sneller bitwise operaties te kunnen doen.
         bitset<64> comboIdBitset;
         for (size_t i = 0; i < combo.size(); i++) {
             comboIdBitset[i] = combo[i];
         }
         comboId = comboIdBitset.to_ullong();
+    }
+
+    static bool compareVolgensComboGrootteAsc(Combinatie* c1, Combinatie* c2) {
+        return (c1->sortComboGrootte < c2->sortComboGrootte);
+    }
+
+    static bool compareVolgensComboGrootteDesc(Combinatie* c1, Combinatie* c2) {
+        return (c1->sortComboGrootte > c2->sortComboGrootte);
     }
 
     static void kuisInputUurlijstenOp(const vector<vector<bool>>& inputUurlijsten, const vector<int>& inputMinima) {
@@ -611,49 +624,61 @@ struct Combinatie {
         }
     }
 
-    static void voegCombinatiesVanBepaaldeGrootteToe(int grootte, size_t start, vector<bool>& comb, bool flip) {
+    static void voegCombinatiesVanBepaaldeGrootteToe(int grootte, size_t start, vector<bool>& comb, bool isEvenMidden, bool symmetrisch, bool flip) {
         if (grootte > 0) {
             for (size_t m = start; m < comb.size() && (Combinatie::combinaties.size() < maxCombinaties); m++) {
                 comb[m] = true;
-                Combinatie::voegCombinatiesVanBepaaldeGrootteToe(grootte - 1, m + 1, comb, flip);
+                Combinatie::voegCombinatiesVanBepaaldeGrootteToe(grootte - 1, m + 1, comb, isEvenMidden, symmetrisch, flip);
                 comb[m] = false;
             }
         }
         else {
-            if (flip) {
-                comb.flip(); //omkeren
-                Combinatie::combinaties.push_back(new Combinatie(comb));
-                comb.flip(); //terug goed zetten
+            if (symmetrisch) {
+                if (start > 0) {
+                    //bij start == 0 hebben we de combinatie waar NIETS gekozen is. Omgekeerde is dan wel goed, alles gekozen.
+                    Combinatie::combinaties.push_back(new Combinatie(comb));
+                }
+                if (!isEvenMidden) {
+                    //niet voor de middelste flippen als die er is.
+                    comb.flip(); //omkeren
+                    Combinatie::combinaties.push_back(new Combinatie(comb));
+                    comb.flip(); //terug goed zetten
+                }
             }
-            else {
-                Combinatie::combinaties.push_back(new Combinatie(comb));
+            else { // voor de versie klein naar groot
+                if (flip) {
+                    comb.flip(); //omkeren
+                    Combinatie::combinaties.push_back(new Combinatie(comb));
+                    comb.flip(); //terug goed zetten
+                }
+                else {
+                    Combinatie::combinaties.push_back(new Combinatie(comb));
+                }
             }
         }
     }
 
-    static void voegCombinatiesVanKleinNaarGrootToe() {
-        //best te gebruiken bij methode2 problemen omdat we dan minder grote combinaties hebben (rekentijd!)
+    static void voegCombinatiesSymmetrischToe() {
+        //best te gebruiken bij methode1 problemen
         size_t aantal = Combinatie::uurlijsten.size();
         size_t helft = div(aantal, 2).quot;
         bool even = (div(aantal, 2).rem == 0);
         vector<bool> comb;
         comb.assign(aantal, false);
-        for (size_t g = 1; g <= helft && (Combinatie::combinaties.size() < maxCombinaties); g++) {
-            Combinatie::voegCombinatiesVanBepaaldeGrootteToe(g, 0, comb, false);
+        for (size_t g = 0; g <= helft && (Combinatie::combinaties.size() < maxCombinaties); g++) {
+            Combinatie::voegCombinatiesVanBepaaldeGrootteToe(g, 0, comb, (helft == g) && even, true, false);
             if (TOONINPUT) {
-                cout << endl << "Combinaties toevoegen (" << g << "/" << aantal << ") ";
-                cout << Combinatie::combinaties.size() << "/" << berekenCombinatie(g, aantal);
+                cout << endl << "Combinaties toevoegen (" << g << "," << (aantal - g) << "/" << aantal << ") ";
+                cout << Combinatie::combinaties.size() << "/" << 2 * berekenCombinatie(g, aantal);
                 cout << "/" << maxCombinaties << "/" << pow(2, aantal) - 1;
             }
         }
-        for (size_t g = helft + 1; g <= aantal && (Combinatie::combinaties.size() < maxCombinaties); g++) {
-            Combinatie::voegCombinatiesVanBepaaldeGrootteToe(aantal - g, 0, comb, true);
-            if (TOONINPUT) {
-                cout << endl << "Combinaties toevoegen (" << (g) << "/" << aantal << ") ";
-                cout << Combinatie::combinaties.size() << "/" << berekenCombinatie(aantal - g, aantal);
-                cout << "/" << maxCombinaties << "/" << pow(2, aantal) - 1;
-            }
-        }
+    }
+
+    static void voegCombinatiesToe() {
+        voegCombinatiesSymmetrischToe();
+        //om de berekening te doen van kleine naar grote combinaties (meer effect blackList).
+        sort(combinaties.begin(), combinaties.end(), Combinatie::compareVolgensComboGrootteAsc);
     }
 
     static void toonCombinaties() {
@@ -775,14 +800,18 @@ struct Combinatie {
             cout << endl << "BEHOUDEN/VERVALLEN/TOTAAL: " << berekenAantalWeerhoudenCombinaties() << "/" << berekenAantalNietBerekendebareCombinaties() << "/" << combinaties.size() << endl;
         }
         //3.we gaan het aantal behouden combinaties nu verder beperken door de maxOutputFactor.
+        //om zeker de belangrijkste te behouden sorteren van groot naar klein.
+        sort(combinaties.begin(), combinaties.end(), Combinatie::compareVolgensComboGrootteDesc);
         size_t tel = 0;
         size_t maxTeller = maxOutputFactor * uurlijsten.size();
         for (size_t c = 0; c < combinaties.size(); c++) {
-            if (tel >= maxTeller && !combinaties[c]->essentieel) {
-                combinaties[c]->behouden = false;
-            }
-            if (combinaties[c]->behouden) {
-                tel++;
+            if (!combinaties[c]->essentieel) {
+                if (tel >= maxTeller) {
+                    combinaties[c]->behouden = false;
+                }
+                if (combinaties[c]->behouden) {
+                    tel++;
+                }
             }
         }
         if (TOONELIMINATIE) {
@@ -879,7 +908,7 @@ vector<uint64_t> Combinatie::blackList;
 
 void zoekOplossing() {
     Combinatie::setupCombinaties(MAT, MIN, MAX);
-    Combinatie::voegCombinatiesVanKleinNaarGrootToe();
+    Combinatie::voegCombinatiesToe();
     //Combinatie::toonCombinaties();
     Combinatie::berekenMinima();
     Combinatie::elimineerRedundanteCombinaties();
